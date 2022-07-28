@@ -41,7 +41,9 @@ def frechetMean(mfd, pointset, weights):
     # number of points
     num = np.size(weights)
 
-    t = weights / jnp.cumsum(weights)
+    # t = weights / jnp.cumsum(weights)
+    csum = jnp.cumsum(weights)
+    t = jnp.where(csum > 0, weights / csum, 0)
     loop = lambda i, mean: mfd.connec.geopoint(mean, pointset[i], t[i])
     return jax.lax.fori_loop(1, num, loop, pointset[0])
 
@@ -73,17 +75,13 @@ class ShapeEstimation:
     def __init__(self, W, B):
         self.W = W
 
-        mfd = Kendall(shape=B[0].shape)
-        self.inputShapes = jax.vmap(mfd.project)(B)
+        self.inputShapes = jax.vmap(Kendall.project)(B)
         self.numShapes = B.shape[0]
         self.numLandmarks = W.shape[1]
         
         #weights for the linear combination of basis shapes (vector "c")
-        self.weights = jnp.ones(self.numShapes)
-        
-        rotation = Stiefel(3,2).random_point()
-        self.rotation = jnp.asarray(rotation)
-        
+        self.weights = None
+        self.rotation = None
         self.frechetMean = None
 
     @partial(jax.jit, static_argnums=0)
@@ -97,7 +95,7 @@ class ShapeEstimation:
         nu = lambda s: s / jnp.linalg.norm(s)
         return 0.5 * jnp.sum((W - nu(mean @ R)) ** 2)
 
-    def optimize(self, maxIter=100, tol=1e-6):
+    def optimize(self, maxIter=100, tol=1e-6, verbose=0):
         """
         Alternating optimization for 3D-from-2D problem.
 
@@ -109,6 +107,9 @@ class ShapeEstimation:
         tol : array-like, shape=[N, ...]
             Tolerance for convergence check.
             Optional, default: 1e-6.
+        verbose : int
+            Verbosity level: 0 is silent, 2 is most verbose.
+            Optional, default: 0
 
         Returns
         -------
@@ -116,67 +117,71 @@ class ShapeEstimation:
             Weighted Frechet mean.
         """
 
-        it=0        
-        newCost=1e10   
-        changeInSS_rotation=1e10
-        changeInSS_weights=1e10
+        V = Stiefel(3, 2)
+
+        # initial guess
+        self.weights = jnp.ones(self.numShapes)
+        # self.rotation = jnp.asarray(V.random_point())
+        mean = self.mean(self.inputShapes, self.weights)
+        U, S, Vt = jax.numpy.linalg.svd(mean.T @ self.W)
+        self.rotation = U[:, :2] @ Vt
 
         # define reprojection error in terms of R and c
         error = lambda R, c: self.error(self.W, R, self.mean(self.inputShapes, c))
+
+        it = 0
+        newCost = changeInSS_weights = 1e10
         cost = error(self.rotation, self.weights)
-        print("initial cost is:", cost)
-         
+
+        # alternating optization
         for it in range(0, maxIter):
-            
+
             epsilon = abs(newCost - cost)
             cost = newCost
 
             #______________OPTIMIZE ROTATION_______________________
-            
-            #find frechet mean of input shapes with the given weights
-            mean = self.mean(self.inputShapes, self.weights)
 
-            V = Stiefel(3, 2)
             costR = lambda R: self.error(self.W, R, mean)
             problemR = Problem(manifold=V, cost=pymanopt.function.jax(V)(costR))
-            solverR = SteepestDescent(max_iterations=10)
+            solverR = SteepestDescent(max_iterations=10, verbosity=verbose)
             Rnew = solverR.run(problemR, initial_point=self.rotation).point
-            
+
             changeInSS_rotation = jnp.max(jnp.sum(jnp.abs(Rnew-self.rotation), axis=1))
-            
+
             #update self.rotation to the new rotation
             self.rotation = Rnew
-            
+
             #check stopping criteria
             if it>0:
                 maxChange = max([float(changeInSS_rotation), float(changeInSS_weights)])
-                if epsilon <= 1e-6 and maxChange <= 1e-6:
-                    print("Stopping criteria reached!")
+                if epsilon <= tol * (1 + cost) and maxChange <= tol**.5:
+                    if verbose:
+                        print(f"Stopping criteria reached in iteration {it}.")
                     break
-            
+
             #________________OPTIMIZE WEIGHTS_______________________
 
             E = Euclidean(self.weights.size)
             costC = lambda c: self.error(self.W, Rnew, self.mean(self.inputShapes, c))
             problemC = Problem(manifold=E, cost=pymanopt.function.jax(E)(costC))
-            solverC=SteepestDescent(max_iterations=5)
+            solverC = SteepestDescent(max_iterations=5, verbosity=0)
             Cnew = solverC.run(problemC, initial_point=self.weights).point
-            
+
             changeInSS_weights = jnp.max(jnp.abs(Cnew - self.weights))
             self.weights = Cnew
+            mean = self.mean(self.inputShapes, self.weights)
 
             #_________________________________________________________
-            
+
             newCost = error(self.rotation, self.weights)
-            print("Cost: ", newCost)
+            if verbose:
+                print("Cost: ", newCost)
             #_________________________________________________________
-         
-        fmean = self.mean(self.inputShapes, self.weights)
 
         #get the 3rd row of rotation matrix by cross multiplying first 2 rows
         rotation3d = jnp.zeros((3,3))
         rotation3d = rotation3d.at[:, :2].set(self.rotation[:, :2])
         rotation3d = rotation3d.at[:, 2].set(np.cross(*self.rotation.T))
 
-        self.frechetMean = fmean @ rotation3d
+        self.frechetMean = mean @ rotation3d
         return self.frechetMean
