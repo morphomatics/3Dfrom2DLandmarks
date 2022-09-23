@@ -1,1 +1,8 @@
-git+https://github.com/morphomatics/morphomatics.git@jax#egg=morphomatics
+git+https://github.com/morphomatics/morphomatics.git@v2.0#egg=morphomatics
+numpy
+jax
+jaxlib
+pymanopt
+pyvista
+ipygany
+ipywidgets

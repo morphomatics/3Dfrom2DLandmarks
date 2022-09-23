@@ -41,10 +41,12 @@ def frechetMean(mfd, pointset, weights):
     # number of points
     num = np.size(weights)
 
-    # t = weights / jnp.cumsum(weights)
-    csum = jnp.cumsum(weights)
-    t = jnp.where(csum > 0, weights / csum, 0)
-    loop = lambda i, mean: mfd.connec.geopoint(mean, pointset[i], t[i])
+    weights = weights / weights.sum()
+    idx = jnp.argsort(-weights)
+    weights = weights[idx]
+    t = weights / jnp.cumsum(weights)
+
+    loop = lambda i, mean: mfd.connec.geopoint(mean, pointset[idx[i]], t[i])
     return jax.lax.fori_loop(1, num, loop, pointset[0])
 
 
