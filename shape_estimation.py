@@ -47,7 +47,7 @@ def frechetMean(mfd, pointset, weights):
     t = weights / jnp.cumsum(weights)
 
     loop = lambda i, mean: mfd.connec.geopoint(mean, pointset[idx[i]], t[i])
-    return jax.lax.fori_loop(1, num, loop, pointset[0])
+    return jax.lax.fori_loop(1, num, loop, pointset[idx[0]])
 
 
 class ShapeEstimation:
